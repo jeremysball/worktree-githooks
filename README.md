@@ -1,68 +1,53 @@
 # worktree-githooks
 
-`post-checkout` githooks for `git worktree` deps — Node (`node_modules` symlink) + Python (`uv sync`) — gated so they’re cheap on every `checkout`/`switch`, not just `worktree add`.
+A small `post-checkout` hook for git worktrees.
 
-## Why
+Fresh worktrees start empty. This hook fills them in: Node reuses the main checkout's `node_modules` when `package-lock.json` matches (otherwise `npm ci`), Python runs `uv sync --locked`. Nothing fancy, just what you'd do by hand.
 
-Git has **no dedicated `post-worktree` hook**. The only hook that fires on `git worktree add` is `post-checkout` (`githooks(5)`):
-
-> *It is also run after git-clone(1)... Likewise for git worktree add unless --no-checkout is used.*
-
-That hook also fires on **every** `git checkout`/`git switch`, so a naïve `npm ci`/`uv sync` there would run on every branch switch. These hooks gate on lockfile hash + stamp so the common case is a ~5ms no-op.
-
-Behavior mirrors `taskferry`’s `scripts/mise-setup-deps.sh` but as installable githooks rather than a daemon or `mise` hook.
-
-## What it does
-
-- **Node/TS/JS** (`post-checkout:10`): if `package-lock.json` exists — hash it, compare to `node_modules/.worktree-setup-stamp`, skip if identical. Otherwise:
-  - main checkout (`main_root == repo_root`): `npm ci`
-  - worktree with identical lockfile to main checkout + main has `node_modules`: `ln -s $main_root/node_modules node_modules` (fast-path, same as `mise-setup-deps.sh:50`)
-  - else: `npm ci` in this worktree (isolated deps when lockfiles differ)
-- **Python** (`post-checkout:22`): if `uv.lock` exists — `uv sync --locked` (idempotent; no symlink — venv is per-worktree)
-
-Both skip entirely when flag `≠ 1` (file checkout) and never fail the checkout (hooks exit 0 on setup failure, warning to stderr).
+Git has no `post-worktree` hook — `post-checkout` is the one that fires on `git worktree add` (`githooks(5)`). It also fires on every `checkout`/`switch`, so this hook checks a stamp (`node_modules/.worktree-setup-stamp`) and exits in milliseconds when deps are already current.
 
 ## Install
 
-Single repo (recommended — `core.hooksPath` → one dir):
+Per-repo (recommended):
 
 ```bash
 git clone https://github.com/jeremysball/worktree-githooks /tmp/worktree-githooks
-cp /tmp/worktree-githooks/hooks/post-checkout .githooks/post-checkout
+cp /tmp/worktree-githooks/.githooks/post-checkout .githooks/post-checkout
 chmod +x .githooks/post-checkout
-git config core.hooksPath .githooks   # per-repo
-# or: git config --global core.hooksPath ~/.config/git/hooks  + copy there
+git config core.hooksPath .githooks
 ```
 
-Polyglot repos — same file handles both ecosystems (no separate hook per language).
-
-Verify:
+Or one-liner:
 
 ```bash
-git worktree add ../my-feature -b my-feature
-# → post-checkout auto-runs: symlink or npm ci, then uv sync if applicable
-ls -l node_modules   # symlink → main checkout when lockfiles match
+bash /tmp/worktree-githooks/install.sh
 ```
 
-## Cost on every checkout
+Global:
 
-`post-checkout` runs on every branch switch by spec, so the stamp/hashes matter:
+```bash
+mkdir -p ~/.config/git/hooks
+cp .githooks/post-checkout ~/.config/git/hooks/post-checkout
+git config --global core.hooksPath ~/.config/git/hooks
+```
 
-- stamp hit (`node_modules/.worktree-setup-stamp == sha256(package-lock.json)`): exits immediately, no `npm ci`
-- Node worktree with matching lockfile: single `cmp -s` + `ln -s` (~10ms)
-- Only lockfile-differing worktrees pay a real `npm ci`
+Or with mise (dotfiles):
 
-This keeps `git switch` cheap while still auto-populating fresh worktrees.
+```bash
+mise-sys install-worktree-githooks   # clones template to ~/.config/git/hooks + sets global hooksPath
+```
 
-## Relationship to `mise` + `taskferry`
+Then:
 
-- `taskferry`/`scaffolding-repos` use `mise run setup` + `[hooks].enter` (needs `mise activate`, doesn’t fire in `bwrap`). That stays the **explicit** path: `mise run setup && taskferry dispatch`.
-- This repo is the **automatic** alternative when you want fresh worktrees to self-populate without remembering `mise run setup`. It deliberately does not use `mise` — pure `bash` + `git rev-parse --git-common-dir`, no hardcoded paths, works from main checkout, any `.claude/worktrees/*`, or throwaway clone.
+```bash
+git worktree add ../feature -b feature
+ls -l node_modules   # symlink to main when lockfiles match
+```
 
-See `scaffolding-repos/resources/node.md` and `resources/python.md` for the `mise`-based scaffolding these hooks complement, and `taskferry/docs/worktree-dependencies.md` for the full trade-off discussion.
+## Notes
 
-## Limitations
+- Node: `npm` + `package-lock.json` only. Python: `uv` + `uv.lock` only. Others are no-ops.
+- Hook never blocks checkout — if setup fails it warns and exits 0. Run `npm ci` or `uv sync --locked` by hand if needed.
+- Pairs with `scaffolding-repos` (`mise run setup`) and `taskferry` — same symlink logic, just automatic.
 
-- Node: `npm` + `package-lock.json` only (no pnpm/yarn). Add your package manager’s equivalent behind the same stamp gate if needed.
-- Python: `uv` + `uv.lock` only.
-- Hook never blocks checkout — setup failure warns to stderr and exits 0. Run `npm ci`/`uv sync --locked` manually if auto-setup failed.
+MIT.
