@@ -2,7 +2,7 @@
 
 A small `post-checkout` hook for git worktrees.
 
-Fresh worktrees start empty. This hook fills them in: Node reuses the main checkout's `node_modules` when `package-lock.json` matches (otherwise `npm ci`), Python runs `uv sync --locked`. Nothing fancy, just what you'd do by hand.
+Fresh worktrees have the branch's tracked files, but not untracked deps like `node_modules` or `.venv`. This hook fills that gap: Node reuses the main checkout's `node_modules` when `package-lock.json` matches (otherwise `npm ci`), Python runs `uv sync --locked`. Nothing fancy, just what you'd do by hand.
 
 Git has no `post-worktree` hook — `post-checkout` is the one that fires on `git worktree add` (`githooks(5)`). It also fires on every `checkout`/`switch`, so this hook checks a stamp (`node_modules/.worktree-setup-stamp`) and exits in milliseconds when deps are already current.
 
