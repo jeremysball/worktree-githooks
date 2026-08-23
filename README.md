@@ -1,53 +1,50 @@
 # worktree-githooks
 
-A small `post-checkout` hook for git worktrees.
+A tiny global `post-checkout` hook that calls your repo's `scripts/worktree-setup.sh` when it exists.
 
-Fresh worktrees have the branch's tracked files, but not untracked deps like `node_modules` or `.venv`. This hook fills that gap: Node reuses the main checkout's `node_modules` when `package-lock.json` matches (otherwise `npm ci`), Python runs `uv sync --locked`. Nothing fancy, just what you'd do by hand.
+Fresh worktrees have the branch's tracked files but not untracked deps like `node_modules` or `.venv`. This repo solves that without putting logic in the hook itself.
 
-Git has no `post-worktree` hook — `post-checkout` is the one that fires on `git worktree add` (`githooks(5)`). It also fires on every `checkout`/`switch`, so this hook checks a stamp (`node_modules/.worktree-setup-stamp`) and exits in milliseconds when deps are already current.
+## How it works
+
+Git has no `post-worktree` hook. The one that fires on `git worktree add` is `post-checkout` (`githooks(5)`). Install that hook once globally — it does nothing until a repo opts in.
+
+- Global hook: `~/.config/git/hooks/post-checkout` (from this repo). Hard-coded to one tracked path, no config:
+  `scripts/worktree-setup.sh` — because `scripts/` is tracked and every worktree gets it via checkout. `.git/` is untracked, so a hook stored there never reaches a new worktree.
+- Per-repo script: `scripts/worktree-setup.sh` (commit it). Example at `scripts/worktree-setup.sh.example` — Node reuses main `node_modules` when `package-lock.json` matches (otherwise `npm ci`), Python runs `uv sync`. Gated on a stamp so every `checkout`/`switch` is milliseconds when already current.
+- No file at that path → hook exits 0, no cost. One global install, per-repo opt-in, no configuration.
+
+Idiomatic Git: `core.hooksPath` points to the hook directory. Global `core.hooksPath` handles the dispatcher; per-repo `scripts/worktree-setup.sh` holds the repo-specific setup. No `git config` key for the path itself — one hard-coded path keeps it simple.
 
 ## Install
 
-Per-repo (recommended):
+Global (once):
 
 ```bash
-git clone https://github.com/jeremysball/worktree-githooks /tmp/worktree-githooks
-cp /tmp/worktree-githooks/.githooks/post-checkout .githooks/post-checkout
-chmod +x .githooks/post-checkout
-git config core.hooksPath .githooks
+mise run install-worktree-githooks
+# clones this repo to ~/projects/worktree-githooks, copies hook to ~/.config/git/hooks/post-checkout, sets git config --global core.hooksPath
 ```
 
-Or one-liner:
+Per-repo opt-in:
 
 ```bash
-bash /tmp/worktree-githooks/install.sh
-```
-
-Global:
-
-```bash
-mkdir -p ~/.config/git/hooks
-cp .githooks/post-checkout ~/.config/git/hooks/post-checkout
-git config --global core.hooksPath ~/.config/git/hooks
-```
-
-Or with mise (dotfiles):
-
-```bash
-mise-sys install-worktree-githooks   # clones template to ~/.config/git/hooks + sets global hooksPath
+cp ~/projects/worktree-githooks/scripts/worktree-setup.sh.example scripts/worktree-setup.sh
+chmod +x scripts/worktree-setup.sh
+# edit to match your stack (Node, Python, both, or delete a section)
+git add scripts/worktree-setup.sh && git commit -m "chore: add worktree setup"
 ```
 
 Then:
 
 ```bash
 git worktree add ../feature -b feature
+# → post-checkout fires → calls scripts/worktree-setup.sh → deps appear
 ls -l node_modules   # symlink to main when lockfiles match
 ```
 
 ## Notes
 
-- Node: `npm` + `package-lock.json` only. Python: `uv` + `uv.lock` only. Others are no-ops.
-- Hook never blocks checkout — if setup fails it warns and exits 0. Run `npm ci` or `uv sync --locked` by hand if needed.
-- Pairs with `scaffolding-repos` (`mise run setup`) and `taskferry` — same symlink logic, just automatic.
+- Hook never blocks checkout — setup failure warns and the checkout still succeeds.
+- Pairs with `scaffolding-repos` (`mise run setup` fallback) — same symlink logic, just automatic now.
+- Want a different path? Edit the one line in `.githooks/post-checkout` (`candidate=...`) and reinstall via `mise run install-worktree-githooks`.
 
 MIT.

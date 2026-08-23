@@ -1,91 +1,30 @@
 #!/usr/bin/env bash
-# worktree-githooks/hooks/post-checkout
-# Auto-populates worktree deps on branch checkout — cheap on every checkout,
-# useful on every `git worktree add`.
+# worktree-githooks/.githooks/post-checkout — global dispatcher
+# Idiomatic Git: install once via `git config --global core.hooksPath ~/.config/git/hooks`
+# (done by `mise run install-worktree-githooks`). Git has no post-worktree hook;
+# this uses post-checkout (githooks(5): "Likewise for git worktree add unless --no-checkout is used.")
+# and dispatches to a single hard-coded tracked path — no config, no alias.
 #
-# Primary source: githooks(5) post-checkout —
-#   "It is also run after git-clone(1)... Likewise for git worktree add unless --no-checkout is used."
-#   + also fires on every `git checkout`/`git switch`, so this hook gates on
-#   stamp/hash and exits fast when deps are already current.
-#
-# Args: $1=prev HEAD, $2=new HEAD, $3=flag (1=branch checkout, 0=file checkout)
+# Hard-coded per-repo path (tracked, so every worktree gets it via checkout):
+#   scripts/worktree-setup.sh
+# Why not .git/* — .git is untracked, so a hook stored there never reaches a new worktree.
+# Why scripts/ — already tracked, already where scaffolding keeps mise-setup-deps.sh, visible in repo.
+# If you want a different convention, edit this one path here and reinstall — but keep it one path.
+# No-op when the file doesn't exist or isn't executable, so repos without worktree deps pay nothing.
 set -euo pipefail
 
-prev_head="${1:-}"
-new_head="${2:-}"
-branch_checkout="${3:-}"
-
-# Only run on branch checkout (worktree add + checkout/switch). File checkouts (flag=0) skip.
-if [ "$branch_checkout" != "1" ]; then
-  exit 0
-fi
-
-# Resolve from the worktree that was just checked out (hook cwd is already there per githooks(5)).
+# Resolve repo root for the worktree that was just checked out (githooks(5) cwd is the worktree root)
 if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
   exit 0
 fi
-common_dir="$(git rev-parse --git-common-dir 2>/dev/null || echo "")"
-if [ -z "$common_dir" ]; then
-  exit 0
-fi
-# git-common-dir may be relative; resolve against repo_root
-if [[ "$common_dir" != /* ]]; then
-  common_dir="$repo_root/$common_dir"
-fi
-# main checkout root is parent of the common dir's realpath (e.g. /repo/.git -> /repo)
-if ! common_real="$(realpath "$common_dir" 2>/dev/null)"; then
-  common_real="$common_dir"
-fi
-main_root="$(dirname "$common_real")"
 
-hash_file() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
-  else
-    shasum -a 256 "$1" | cut -d' ' -f1
-  fi
-}
+candidate="$repo_root/scripts/worktree-setup.sh"
 
-# ---- Node / TS / JS (package-lock.json) ----
-if [ -f "$repo_root/package-lock.json" ]; then
-  stamp_path="$repo_root/node_modules/.worktree-setup-stamp"
-  # Also honor the mise stamp if present (so mise + hook don't fight)
-  mise_stamp="$repo_root/node_modules/.mise-setup-stamp"
-  current_hash="$(hash_file "$repo_root/package-lock.json" 2>/dev/null || echo "")"
-  if [ -n "$current_hash" ] && [ -e "$repo_root/node_modules" ] && { [ -f "$stamp_path" ] && [ "$(cat "$stamp_path" 2>/dev/null)" = "$current_hash" ]; } || { [ -f "$mise_stamp" ] && [ "$(cat "$mise_stamp" 2>/dev/null)" = "$current_hash" ]; }; then
-    : # already current — no Node setup
-  else
-    if [ -n "$current_hash" ]; then
-      if [ "$main_root" = "$repo_root" ]; then
-        echo "worktree-githooks: main checkout ($repo_root) — running npm ci" >&2
-        (cd "$repo_root" && npm ci) || echo "worktree-githooks: npm ci failed (non-fatal)" >&2
-        echo "$current_hash" > "$stamp_path" 2>/dev/null || true
-      else
-        main_lock="$main_root/package-lock.json"
-        if [ -d "$main_root/node_modules" ] && [ -f "$main_lock" ] && cmp -s "$main_lock" "$repo_root/package-lock.json" 2>/dev/null; then
-          echo "worktree-githooks: worktree lockfile matches main ($main_root) — symlinking node_modules" >&2
-          rm -rf "$repo_root/node_modules"
-          ln -s "$main_root/node_modules" "$repo_root/node_modules" 2>/dev/null || echo "worktree-githooks: symlink failed" >&2
-          echo "$current_hash" > "$stamp_path" 2>/dev/null || true
-        else
-          echo "worktree-githooks: lockfile differs or main lacks node_modules — running npm ci in $repo_root" >&2
-          (cd "$repo_root" && npm ci) || echo "worktree-githooks: npm ci failed (non-fatal)" >&2
-          echo "$current_hash" > "$stamp_path" 2>/dev/null || true
-        fi
-      fi
-    fi
-  fi
-fi
-
-# ---- Python (uv.lock) ----
-if [ -f "$repo_root/uv.lock" ]; then
-  if command -v uv >/dev/null 2>&1; then
-    # uv sync is idempotent and itself fast when already synced; still only run on branch checkout
-    echo "worktree-githooks: syncing Python deps (uv sync --locked)" >&2
-    (cd "$repo_root" && uv sync --locked) || echo "worktree-githooks: uv sync failed (non-fatal)" >&2
-  else
-    echo "worktree-githooks: uv.lock present but uv not on PATH — skipping Python sync" >&2
-  fi
+if [ -x "$candidate" ]; then
+  exec "$candidate" "$@"
+elif [ -f "$candidate" ]; then
+  # Present but not executable (e.g. checked out without +x on Windows) — still run
+  exec bash "$candidate" "$@"
 fi
 
 exit 0

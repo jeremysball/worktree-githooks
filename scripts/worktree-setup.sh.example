@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Example per-repo worktree setup — copy to scripts/worktree-setup.sh and commit.
+# This is what scaffolding-repos/resources/node.md + python.md recommend per repo.
+# Tracked so every `git worktree add` gets it via checkout; the global
+# ~/.config/git/hooks/post-checkout dispatcher calls this file when it exists.
+#
+# Args from githooks(5) post-checkout: $1=prev HEAD, $2=new HEAD, $3=flag (1=branch checkout)
+set -euo pipefail
+
+prev_head="${1:-}"
+new_head="${2:-}"
+branch_checkout="${3:-}"
+
+# Only on branch checkout (covers worktree add + checkout/switch); file checkouts skip.
+if [ "$branch_checkout" != "1" ]; then
+  exit 0
+fi
+
+if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  exit 0
+fi
+common_dir="$(git rev-parse --git-common-dir 2>/dev/null || echo "")"
+[ -n "$common_dir" ] || exit 0
+[[ "$common_dir" == /* ]] || common_dir="$repo_root/$common_dir"
+common_real="$(realpath "$common_dir" 2>/dev/null || echo "$common_dir")"
+main_root="$(dirname "$common_real")"
+
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# ---- Node / TS / JS (package-lock.json) ----
+if [ -f "$repo_root/package-lock.json" ]; then
+  stamp_path="$repo_root/node_modules/.worktree-setup-stamp"
+  mise_stamp="$repo_root/node_modules/.mise-setup-stamp"
+  current_hash="$(hash_file "$repo_root/package-lock.json" 2>/dev/null || echo "")"
+  if [ -n "$current_hash" ] && [ -e "$repo_root/node_modules" ] && { [ -f "$stamp_path" ] && [ "$(cat "$stamp_path" 2>/dev/null)" = "$current_hash" ]; } || { [ -f "$mise_stamp" ] && [ "$(cat "$mise_stamp" 2>/dev/null)" = "$current_hash" ]; }; then
+    : # already current
+  elif [ -n "$current_hash" ]; then
+    if [ "$main_root" = "$repo_root" ]; then
+      echo "worktree-setup: main checkout ($repo_root) — npm ci" >&2
+      (cd "$repo_root" && npm ci) || echo "worktree-setup: npm ci failed (non-fatal)" >&2
+      echo "$current_hash" > "$stamp_path" 2>/dev/null || true
+    else
+      main_lock="$main_root/package-lock.json"
+      if [ -d "$main_root/node_modules" ] && [ -f "$main_lock" ] && cmp -s "$main_lock" "$repo_root/package-lock.json" 2>/dev/null; then
+        echo "worktree-setup: symlinking node_modules from $main_root" >&2
+        rm -rf "$repo_root/node_modules"
+        ln -s "$main_root/node_modules" "$repo_root/node_modules" 2>/dev/null || true
+        echo "$current_hash" > "$stamp_path" 2>/dev/null || true
+      else
+        echo "worktree-setup: npm ci in $repo_root" >&2
+        (cd "$repo_root" && npm ci) || echo "worktree-setup: npm ci failed" >&2
+        echo "$current_hash" > "$stamp_path" 2>/dev/null || true
+      fi
+    fi
+  fi
+fi
+
+# ---- Python (uv.lock) ----
+if [ -f "$repo_root/uv.lock" ] && command -v uv >/dev/null 2>&1; then
+  echo "worktree-setup: uv sync --locked" >&2
+  (cd "$repo_root" && uv sync --locked) || echo "worktree-setup: uv sync failed" >&2
+fi
+
+exit 0
