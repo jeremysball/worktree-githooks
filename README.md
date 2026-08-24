@@ -20,10 +20,18 @@ Global, once:
 
 ```bash
 mise run install-worktree-githooks
-# clones to ~/projects/worktree-githooks, copies the hook to ~/.config/git/hooks/post-checkout, sets git config --global core.hooksPath
+# clones to ~/projects/worktree-githooks, copies hooks to ~/.config/git/hooks/{post-checkout,pre-commit}, sets git config --global core.hooksPath
 ```
 
-Per-repo, opt in:
+The global `pre-commit` blocks em dashes. If staged changes add a line with `—` or ` -- ` the commit fails with the offending line shown.
+
+```bash
+git commit -m "fix — typo"  # blocked
+git commit --no-verify -m "fix — typo"  # bypass once
+SKIP_EMDASH_CHECK=1 git commit -m "fix — typo"  # also bypasses
+```
+
+Per-repo worktree, opt in:
 
 ```bash
 cp ~/projects/worktree-githooks/scripts/worktree-setup.sh.example scripts/worktree-setup.sh
@@ -41,8 +49,10 @@ git worktree add ../feature -b feature
 
 ## Notes
 
-The hook never blocks checkout. If setup fails it warns and checkout still succeeds.
+The `post-checkout` hook never blocks checkout. If setup fails it warns and checkout still succeeds.
 
-Want a different path? Change the `candidate=` line in `.githooks/post-checkout` and run `mise run install-worktree-githooks` again.
+The `pre-commit` hook does block. It checks only added lines in the staged diff, so existing em dashes already committed do not block until you touch them. It chains to a local `.githooks/pre-commit` when that file exists, so per-repo hooks still run after the emdash check.
+
+Want a different worktree path? Change the `candidate=` line in `.githooks/post-checkout` and run `mise run install-worktree-githooks` again.
 
 MIT.
