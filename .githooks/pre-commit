@@ -1,61 +1,52 @@
 #!/usr/bin/env bash
-# worktree-githooks/.githooks/pre-commit — global emdash gate + dispatcher
-# Blocks commits that stage an em dash (—) or spaced double-hyphen ( -- ) used as its ascii stand-in.
-# Override for one commit: git commit --no-verify  or  SKIP_EMDASH_CHECK=1 git commit
-# Why global: one install via `mise run install-worktree-githooks` covers every repo.
-# Why dispatch after: repos with a local .githooks/pre-commit still need to run — this
-# chains to it after the emdash check so global and per-repo hooks coexist with a single core.hooksPath.
+# install-githooks-shim: v1
+# Managed by `mise run install-githooks`. Do not edit.
+# Repo-specific checks belong in the .local file this dispatches to.
 set -euo pipefail
 
-# Allow explicit skip
-if [ "${SKIP_EMDASH_CHECK:-}" = "1" ] || [ "${SKIP_EMDASH:-}" = "1" ]; then
-  # still chain to local hook
-  :
-else
-  # Collect diff of staged changes; only inspect added lines (ignore deletions and diff headers).
-  # Using --cached -U0 keeps it short and shows only changed lines.
-  diff_output="$(git diff --cached --unified=0 --no-color 2>/dev/null || true)"
-
-  # Quick check: does diff contain em dash or spaced -- on an added line?
-  # Filter: lines starting with single '+', not '+++' header, then search for — or ' -- '
-  if printf '%s\n' "$diff_output" | grep -E '^\+[^+]' | grep -E '—| -- ' >/dev/null 2>&1; then
-    echo "pre-commit: em dash blocked — staged changes contain em dash (—) or spaced double-hyphen ( -- )" >&2
-    echo "" >&2
-    echo "Fix it, then stage again:" >&2
-    echo "  sed -E 's/ *— */, /g; s/ +-- +/, /g'  # — and ' -- ' -> comma (then adjust to period/colon as needed)" >&2
-    echo "" >&2
-    # Show offending lines with file context
-    printf '%s\n' "$diff_output" | grep -E '^\+[^+].*(—| -- )' | head -n 20 | sed 's/^/  /' >&2 || true
-    echo "" >&2
-    echo "Details: replace the em dash with a comma, period, or colon. Keep related words together." >&2
-    echo "Bypass once: git commit --no-verify  or  SKIP_EMDASH_CHECK=1 git commit" >&2
-    exit 1
-  fi
-fi
-
-# Chain to repo-local pre-commit if present (pair with .githooks/post-checkout dispatcher pattern)
-# Use git rev-parse to handle worktree CWD correctly; fallback to PWD.
+hook_name="$(basename "$0")"
+# Fail open on the lookup, the way every hook in ~/.config/git/hooks already
+# does (pre-commit:94, pre-push:190, post-checkout:17). Under `set -e` the
+# bare form aborts the shim, so a context where --show-toplevel legitimately
+# fails turns a gate into a hard block: verified 2026-09-03 by pushing from a
+# bare repo, where the bare form died `fatal: this operation must be run in a
+# work tree` and refused the push while the global pre-push exited 0.
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-local_hook="$repo_root/.githooks/pre-commit"
-
-# Avoid self-recursion: global hook lives at ~/.config/git/hooks/pre-commit, local at .githooks/pre-commit — distinct paths.
-# Also check an alternate tracked location some repos use: hooks/pre-commit
-alt_hook="$repo_root/hooks/pre-commit"
-
-# If we are the global hook, running .githooks/pre-commit is not recursion. If this file was copied to .githooks and
-# core.hooksPath=.githooks, then local_hook == this file and we must not re-exec.
+global_hook="${XDG_CONFIG_HOME:-$HOME/.config}/git/hooks/$hook_name"
 self_path="$(realpath "$0" 2>/dev/null || echo "$0")"
-local_real="$(realpath "$local_hook" 2>/dev/null || echo "")"
-alt_real="$(realpath "$alt_hook" 2>/dev/null || echo "")"
 
-if [ -n "$local_real" ] && [ "$local_real" != "$self_path" ] && [ -x "$local_hook" ]; then
-  exec "$local_hook" "$@"
-elif [ -n "$local_real" ] && [ "$local_real" != "$self_path" ] && [ -f "$local_hook" ]; then
-  exec bash "$local_hook" "$@"
-elif [ -n "$alt_real" ] && [ "$alt_real" != "$self_path" ] && [ -x "$alt_hook" ]; then
-  exec "$alt_hook" "$@"
-elif [ -n "$alt_real" ] && [ "$alt_real" != "$self_path" ] && [ -f "$alt_hook" ]; then
-  exec bash "$alt_hook" "$@"
+# 1. global gates (em dash, worktree budget, ...), when dotfiles are applied.
+#    Skipped when the global hook is what invoked us, so we do not loop.
+if [ -z "${GIT_HOOKS_CHAINED:-}" ] && [ -x "$global_hook" ]; then
+  GIT_HOOKS_CHAINED=1 "$global_hook" "$@"
 fi
 
-exit 0
+# 2. this repo's own checks, if it has any.
+#
+# The realpath self-check matches the one in the global hooks, and for the
+# same reason: a candidate that resolves back to this file re-enters the shim
+# with the same $0 basename, so nothing ever terminates. Verified 2026-09-03
+# on a scratch repo whose `hooks/pre-commit` symlinked to `.githooks/pre-commit`
+# the commit hung until a 15s timeout killed it. (The `.local` name is
+# self-limiting by accident, since re-entry through it changes the basename to
+# `pre-commit.local` and the second pass finds nothing; the `hooks/` path has
+# no such accident, and relying on one either way is not a guard.)
+local_hook="$repo_root/.githooks/$hook_name.local"
+alt_hook="$repo_root/hooks/$hook_name"
+for candidate in "$local_hook" "$alt_hook"; do
+  [ -f "$candidate" ] || continue
+  candidate_real="$(realpath "$candidate" 2>/dev/null || echo "")"
+  [ -n "$candidate_real" ] && [ "$candidate_real" != "$self_path" ] || continue
+  # GIT_HOOKS_CHAINED propagates down, matching pre-commit:138-144 and
+  # pre-push:198. Not a bug fix: measured 2026-09-03, a .local that is itself
+  # a shim copy already runs the global gates once either way, because
+  # re-entry changes the basename to pre-commit.local and the global lookup
+  # misses. That is the same accident the realpath check above refuses to
+  # rely on, so state the invariant instead: once the gates have run, nothing
+  # downstream runs them again.
+  if [ -x "$candidate" ]; then
+    exec env GIT_HOOKS_CHAINED=1 "$candidate" "$@"
+  else
+    exec env GIT_HOOKS_CHAINED=1 bash "$candidate" "$@"
+  fi
+done

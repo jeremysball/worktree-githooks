@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# worktree-githooks/.githooks/post-checkout — global dispatcher
+# Idiomatic Git: install once via `git config --global core.hooksPath ~/.config/git/hooks`
+# (done by `mise run install-worktree-githooks`). Git has no post-worktree hook;
+# this uses post-checkout (githooks(5): "Likewise for git worktree add unless --no-checkout is used.")
+# and dispatches to a single hard-coded tracked path — no config, no alias.
+#
+# Hard-coded per-repo path (tracked, so every worktree gets it via checkout):
+#   scripts/worktree-setup.sh
+# Why not .git/* — .git is untracked, so a hook stored there never reaches a new worktree.
+# Why scripts/ — already tracked, already where scaffolding keeps mise-setup-deps.sh, visible in repo.
+# If you want a different convention, edit this one path here and reinstall — but keep it one path.
+# No-op when the file doesn't exist or isn't executable, so repos without worktree deps pay nothing.
+set -euo pipefail
+
+# Resolve repo root for the worktree that was just checked out (githooks(5) cwd is the worktree root)
+if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  exit 0
+fi
+
+candidate="$repo_root/scripts/worktree-setup.sh"
+
+if [ -x "$candidate" ]; then
+  exec "$candidate" "$@"
+elif [ -f "$candidate" ]; then
+  # Present but not executable (e.g. checked out without +x on Windows) — still run
+  exec bash "$candidate" "$@"
+fi
+
+exit 0
